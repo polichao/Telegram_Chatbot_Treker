@@ -41,6 +41,10 @@ conn.commit()  # Сохраняем изменения
 # Загружаем токен из переменных среды
 TOKEN = os.getenv('BOT_TOKEN')
 
+# Проверка, что токен получен
+if not TOKEN:
+    raise ValueError("BOT_TOKEN is not set in environment variables!")
+
 # Настраиваем бота
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
