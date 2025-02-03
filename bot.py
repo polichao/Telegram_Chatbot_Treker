@@ -38,9 +38,8 @@ CREATE TABLE IF NOT EXISTS time_tracking (
 conn.commit()  # Сохраняем изменения
 
 
-# Загружаем токен из .env
-load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+# Загружаем токен из переменных среды
+TOKEN = os.getenv('BOT_TOKEN')
 
 # Настраиваем бота
 bot = Bot(token=TOKEN)
