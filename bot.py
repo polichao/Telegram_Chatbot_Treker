@@ -2,9 +2,11 @@ import asyncio
 import logging
 import os
 import io
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, types, filters
+from aiogram.types import CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram import F
 from dotenv import load_dotenv
 from datetime import datetime
 import sqlite3
@@ -34,18 +36,13 @@ CREATE TABLE IF NOT EXISTS time_tracking (
     start_time TEXT
 )
 """)
-cursor.execute("""
-ALTER TABLE time_logs ADD COLUMN start_time TEXT;
-""")
 
-cursor.execute("""
-ALTER TABLE time_logs ADD COLUMN end_time TEXT;
-""")
 
 conn.commit()  # Сохраняем изменения
 
 
 # Загружаем токен из переменных среды
+#load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 
 # Проверка, что токен получен
@@ -81,6 +78,7 @@ DAYS_TRANSLATION = {
         "Saturday": "Суббота",
         "Sunday": "Воскресенье",
     }
+
 
 # Обработчик команды /start
 @dp.message(Command("start"))
