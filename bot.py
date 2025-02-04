@@ -36,8 +36,12 @@ CREATE TABLE IF NOT EXISTS time_tracking (
 """)
 cursor.execute("""
 ALTER TABLE time_logs ADD COLUMN start_time TEXT;
+""")
+
+cursor.execute("""
 ALTER TABLE time_logs ADD COLUMN end_time TEXT;
 """)
+
 conn.commit()  # Сохраняем изменения
 
 
