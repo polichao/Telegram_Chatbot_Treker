@@ -3,7 +3,7 @@ import logging
 import os
 import io
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from dotenv import load_dotenv
 from datetime import datetime
@@ -34,7 +34,10 @@ CREATE TABLE IF NOT EXISTS time_tracking (
     start_time TEXT
 )
 """)
-
+cursor.execute("""
+ALTER TABLE time_logs ADD COLUMN start_time TEXT;
+ALTER TABLE time_logs ADD COLUMN end_time TEXT;
+""")
 conn.commit()  # Сохраняем изменения
 
 
@@ -147,7 +150,6 @@ def get_weekly_stats(user_id):
 
     # Группируем по дням недели
     stats_by_day = {}
-    print(rows)
     for date, category, duration in rows:
         weekday = datetime.strptime(date, "%Y-%m-%d").strftime("%A")
         weekday_ru = DAYS_TRANSLATION[weekday]  # Переводим на русский
@@ -193,6 +195,95 @@ async def track_time(message: types.Message):
     if old_category != category:
         start_tracking(user_id, category)
         await message.answer(f"✅ Начат трекинг: {category}")
+
+
+# Меняет время старта / окончания последней деятельности
+@dp.message(Command("edit_last_tracking"))
+async def edit_last_tracking(message: types.Message):
+    user_id = message.from_user.id
+
+    # Получаем последний трекинг пользователя
+    cursor.execute(
+        "SELECT id, category, start_time, end_time FROM time_logs WHERE user_id = ? ORDER BY start_time DESC LIMIT 1",
+        (user_id,))
+    last_tracking = cursor.fetchone()
+
+    if not last_tracking:
+        await message.answer("У тебя пока нет записей для редактирования.")
+        return
+
+    tracking_id, category, start_time, end_time = last_tracking
+
+    # Создаем кнопки
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Изменить начало", callback_data=f"edit_start_{tracking_id}_{start_time}")],
+        [InlineKeyboardButton(text="Изменить окончание", callback_data=f"edit_end_{tracking_id}_{end_time}")]
+    ])
+
+    await message.answer(
+        f"Твой последний трекинг:\n"
+        f"📌 Категория: {category}\n"
+        f"🕒 Начало: {start_time}\n"
+        f"⏳ Окончание: {end_time}\n"
+        f"Что ты хочешь изменить?",
+        reply_markup=keyboard
+    )
+
+
+# Колбэки изменения старта и окончания прошлого трекинга
+@dp.callback_query(F.data.startswith("edit_start_"))
+async def edit_start_time(callback: CallbackQuery):
+    tracking_id = callback.data.split("_")[2]
+    start_time = callback.data.split("_")[3]
+    await callback.message.answer("Введи новое время начала в формате HH:MM:")
+    await state.update_data(tracking_id=tracking_id, end_time=start_time)
+    await state.set_state("waiting_for_new_start_time")
+
+
+@dp.callback_query(F.data.startswith("edit_end_"))
+async def edit_end_time(callback: CallbackQuery):
+    tracking_id = callback.data.split("_")[2]
+    end_time = callback.data.split("_")[3]
+    await callback.message.answer("Введи новое время окончания в формате HH:MM:")
+    await state.update_data(tracking_id=tracking_id, end_time=end_time)
+    await state.set_state("waiting_for_new_end_time")
+
+
+# Ожидание нового времени старта и окончания прошлого трекинга
+@dp.message(StateFilter("waiting_for_new_start_time"))
+async def process_new_start_time(message: types.Message, state: FSMContext):
+    try:
+        new_start_time = datetime.strptime(message.text, "%H:%M")
+        data = await state.get_data()
+        tracking_id = data["tracking_id"]
+        date = data["start_time"].split()[0]
+        new_start_time = date + new_start_time
+        cursor.execute("UPDATE time_logs SET start_time = ? WHERE id = ?", (new_start_time, tracking_id))
+        conn.commit()
+
+        await message.answer(f"✅ Время начала изменено на {new_start_time}.")
+        await state.clear()
+
+    except ValueError:
+        await message.answer("Неверный формат! Попробуй еще раз (пример: 14:30).")
+
+
+@dp.message(StateFilter("waiting_for_new_end_time"))
+async def process_new_end_time(message: types.Message, state: FSMContext):
+    try:
+        new_end_time = datetime.strptime(message.text, "%H:%M")
+        data = await state.get_data()
+        tracking_id = data["tracking_id"]
+        date = data["end_time"].split()[0]
+        new_end_time = date + new_end_time
+        cursor.execute("UPDATE time_logs SET end_time = ? WHERE id = ?", (new_end_time, tracking_id))
+        conn.commit()
+
+        await message.answer(f"✅ Время окончания изменено на {new_end_time}.")
+        await state.clear()
+
+    except ValueError:
+        await message.answer("Неверный формат! Попробуй еще раз (пример: 15:45).")
 
 
 # Обработчик получения статистики
@@ -266,11 +357,11 @@ async def send_weekly_stats(message: types.Message):
         text += day_text
     await message.answer(text, parse_mode="Markdown")
 
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
 
-print(f"TOKEN: {TOKEN}")
 
 if __name__ == "__main__":
     asyncio.run(main())
