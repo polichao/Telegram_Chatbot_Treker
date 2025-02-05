@@ -136,7 +136,24 @@ def get_daily_stats(user_id):
 
     # Считаем время без трекинга
     total_tracked = sum(duration for _, duration in rows)
-    untracked_minutes = 1440 - total_tracked  # 1440 минут = 24 часа
+    now = datetime.now()
+    cursor.execute("""
+        SELECT start_time FROM time_logs 
+        WHERE user_id = ? AND date = ? 
+        ORDER BY end_time LIMIT 1
+        """, (user_id, date))
+    start_time = cursor.fetchone()
+    start_time = datetime.fromisoformat(start_time) if start_time else None
+    h7m30 = datetime(now.year, now.month, now.day, 7, 30,0)
+    if start_time and start_time < h7m30:
+        total_for_now = now - start_time
+        total_for_now = round(total_for_now.total_seconds() / 60)
+    else:
+        total_for_now = now - h7m30
+        total_for_now = round(total_for_now.total_seconds() / 60)
+
+    rows = cursor.fetchall()
+    untracked_minutes = total_for_now - total_tracked
 
     # Добавляем "Без трекинга"
     rows.append(("🕰 Без трекинга", untracked_minutes))
