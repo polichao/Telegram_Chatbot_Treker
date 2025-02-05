@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS time_logs (
     user_id INTEGER,
     category TEXT,
     date TEXT,
+    start_time TEXT,
+    end_time TEXT,
     duration INTEGER  -- Длительность в минутах
 )
 """)
@@ -42,7 +44,7 @@ conn.commit()  # Сохраняем изменения
 
 
 # Загружаем токен из переменных среды
-#load_dotenv()
+load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 
 # Проверка, что токен получен
@@ -100,14 +102,16 @@ def stop_tracking(user_id):
 
     if row:
         category, start_time = row
+        start = start_time
         start_time = datetime.fromisoformat(start_time)
+        now = datetime.now().isoformat()
         duration = datetime.now() - start_time
         minutes = round(duration.total_seconds() / 60)
 
         # **Сохраняем в таблицу статистики**
         date = datetime.now().strftime("%Y-%m-%d")  # Дата в формате YYYY-MM-DD
-        cursor.execute("INSERT INTO time_logs (user_id, category, date, duration) VALUES (?, ?, ?, ?)",
-                       (user_id, category, date, minutes))
+        cursor.execute("INSERT INTO time_logs (user_id, category, date, start_time, end_time, duration) VALUES (?, ?, ?, ?, ?, ?)",
+                       (user_id, category, date, start, now, minutes))
         conn.commit()
 
         # Удаляем запись из `time_tracking`, чтобы активность считалась завершённой
@@ -206,7 +210,7 @@ async def edit_last_tracking(message: types.Message):
 
     # Получаем последний трекинг пользователя
     cursor.execute(
-        "SELECT id, category, start_time, end_time FROM time_logs WHERE user_id = ? ORDER BY start_time DESC LIMIT 1",
+        "SELECT id, category, start_time, end_time, date FROM time_logs WHERE user_id = ? ORDER BY start_time DESC LIMIT 1",
         (user_id,))
     last_tracking = cursor.fetchone()
 
@@ -214,19 +218,19 @@ async def edit_last_tracking(message: types.Message):
         await message.answer("У тебя пока нет записей для редактирования.")
         return
 
-    tracking_id, category, start_time, end_time = last_tracking
-
+    tracking_id, category, start_time, end_time, date = last_tracking
     # Создаем кнопки
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Изменить начало", callback_data=f"edit_start_{tracking_id}_{start_time}")],
-        [InlineKeyboardButton(text="Изменить окончание", callback_data=f"edit_end_{tracking_id}_{end_time}")]
+        [InlineKeyboardButton(text="Изменить начало", callback_data=f"edit_start_{tracking_id}_{date}_{end_time}")],
+        [InlineKeyboardButton(text="Изменить окончание", callback_data=f"edit_end_{tracking_id}_{date}_{start_time}")]
     ])
-
+    start_time_text = datetime.fromisoformat(start_time).strftime("%d.%m.%Y %H:%M")
+    end_time_text = datetime.fromisoformat(end_time).strftime("%d.%m.%Y %H:%M")
     await message.answer(
         f"Твой последний трекинг:\n"
         f"📌 Категория: {category}\n"
-        f"🕒 Начало: {start_time}\n"
-        f"⏳ Окончание: {end_time}\n"
+        f"🕒 Начало: {start_time_text}\n"
+        f"⏳ Окончание: {end_time_text}\n"
         f"Что ты хочешь изменить?",
         reply_markup=keyboard
     )
@@ -234,20 +238,22 @@ async def edit_last_tracking(message: types.Message):
 
 # Колбэки изменения старта и окончания прошлого трекинга
 @dp.callback_query(F.data.startswith("edit_start_"))
-async def edit_start_time(callback: CallbackQuery):
+async def edit_start_time(callback: CallbackQuery, state: FSMContext):
     tracking_id = callback.data.split("_")[2]
-    start_time = callback.data.split("_")[3]
+    date = callback.data.split("_")[3]
+    end_time = callback.data.split("_")[4]
     await callback.message.answer("Введи новое время начала в формате HH:MM:")
-    await state.update_data(tracking_id=tracking_id, end_time=start_time)
+    await state.update_data(tracking_id=tracking_id, date=date, end_time=end_time)
     await state.set_state("waiting_for_new_start_time")
 
 
 @dp.callback_query(F.data.startswith("edit_end_"))
-async def edit_end_time(callback: CallbackQuery):
+async def edit_end_time(callback: CallbackQuery, state: FSMContext):
     tracking_id = callback.data.split("_")[2]
-    end_time = callback.data.split("_")[3]
+    date = callback.data.split("_")[3]
+    start_time = callback.data.split("_")[4]
     await callback.message.answer("Введи новое время окончания в формате HH:MM:")
-    await state.update_data(tracking_id=tracking_id, end_time=end_time)
+    await state.update_data(tracking_id=tracking_id, date=date, start_time=start_time)
     await state.set_state("waiting_for_new_end_time")
 
 
@@ -255,16 +261,25 @@ async def edit_end_time(callback: CallbackQuery):
 @dp.message(StateFilter("waiting_for_new_start_time"))
 async def process_new_start_time(message: types.Message, state: FSMContext):
     try:
-        new_start_time = datetime.strptime(message.text, "%H:%M")
+        new_hour, new_minute = map(int,message.text.split(":"))
         data = await state.get_data()
         tracking_id = data["tracking_id"]
-        date = data["start_time"].split()[0]
-        new_start_time = date + new_start_time
-        cursor.execute("UPDATE time_logs SET start_time = ? WHERE id = ?", (new_start_time, tracking_id))
-        conn.commit()
+        date = data["date"]
+        end_time = datetime.fromisoformat(data["end_time"])
+        new_start_time = datetime.strptime(date, "%Y-%m-%d").replace(hour=new_hour, minute=new_minute)
 
-        await message.answer(f"✅ Время начала изменено на {new_start_time}.")
-        await state.clear()
+        if end_time < new_start_time:
+            await message.answer("Ошибка: Время финиша не может быть раньше старта! Попробуйте еще раз.")
+        else:
+            new_time_iso = new_start_time.isoformat()
+            duration = end_time - new_start_time
+            minutes = round(duration.total_seconds() / 60)
+            cursor.execute("UPDATE time_logs SET start_time = ?, duration = ? WHERE id = ?", (new_time_iso, minutes, tracking_id))
+            conn.commit()
+
+            new_time_str = new_start_time.strftime("%d.%m.%Y %H:%M")
+            await message.answer(f"✅ Время начала изменено на {new_time_str}.")
+            await state.clear()
 
     except ValueError:
         await message.answer("Неверный формат! Попробуй еще раз (пример: 14:30).")
@@ -273,16 +288,24 @@ async def process_new_start_time(message: types.Message, state: FSMContext):
 @dp.message(StateFilter("waiting_for_new_end_time"))
 async def process_new_end_time(message: types.Message, state: FSMContext):
     try:
-        new_end_time = datetime.strptime(message.text, "%H:%M")
+        new_hour, new_minute = map(int, message.text.split(":"))
         data = await state.get_data()
         tracking_id = data["tracking_id"]
-        date = data["end_time"].split()[0]
-        new_end_time = date + new_end_time
-        cursor.execute("UPDATE time_logs SET end_time = ? WHERE id = ?", (new_end_time, tracking_id))
-        conn.commit()
+        date = data["date"]
+        start_time = datetime.fromisoformat(data["start_time"])
+        new_end_time = datetime.strptime(date, "%Y-%m-%d").replace(hour=new_hour, minute=new_minute)
 
-        await message.answer(f"✅ Время окончания изменено на {new_end_time}.")
-        await state.clear()
+        if new_end_time < start_time:
+            await message.answer("Ошибка: Время финиша не может быть раньше старта! Попробуйте еще раз.")
+        else:
+            new_time_iso = new_end_time.isoformat()
+            duration = new_end_time - start_time
+            minutes = round(duration.total_seconds() / 60)
+            cursor.execute("UPDATE time_logs SET end_time = ?, duration = ? WHERE id = ?", (new_time_iso, minutes, tracking_id))
+            conn.commit()
+            new_time_str = new_end_time.strftime("%d.%m.%Y %H:%M")
+            await message.answer(f"✅ Время окончания изменено на {new_time_str}.")
+            await state.clear()
 
     except ValueError:
         await message.answer("Неверный формат! Попробуй еще раз (пример: 15:45).")
