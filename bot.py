@@ -142,7 +142,7 @@ def get_daily_stats(user_id):
         WHERE user_id = ? AND date = ? 
         ORDER BY end_time LIMIT 1
         """, (user_id, date))
-    start_time = cursor.fetchone()
+    start_time = cursor.fetchone()[0]
     start_time = datetime.fromisoformat(start_time) if start_time else None
     h7m30 = datetime(now.year, now.month, now.day, 7, 30,0)
     if start_time and start_time < h7m30:
