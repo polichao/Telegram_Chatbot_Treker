@@ -3,7 +3,8 @@ import logging
 import os
 import io
 from aiogram import Bot, Dispatcher, types, filters
-from aiogram.types import CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InlineKeyboardMarkup, \
+    InlineKeyboardButton
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram import F
@@ -12,6 +13,7 @@ from datetime import datetime
 import sqlite3
 import matplotlib.pyplot as plt
 import re
+import pytz
 
 conn = sqlite3.connect("database.db")  # Подключаемся к базе (файл database.db)
 cursor = conn.cursor()
@@ -39,9 +41,7 @@ CREATE TABLE IF NOT EXISTS time_tracking (
 )
 """)
 
-
 conn.commit()  # Сохраняем изменения
-
 
 # Загружаем токен из переменных среды
 load_dotenv()
@@ -55,41 +55,133 @@ if not TOKEN:
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Кнопки для быстрого выбора категории
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🛁 Уход за собой"), KeyboardButton(text="💼 Работа")],
-        [KeyboardButton(text="🏋️‍ Спорт и Здоровье"), KeyboardButton(text="👨‍👩‍👧‍👦 Семья и друзья")],
-        [KeyboardButton(text="😴 Сон"), KeyboardButton(text="🏡 Домашние дела")],
-        [KeyboardButton(text="📚 Личное развитие"), KeyboardButton(text="🎮 Развлечения")],
-        [KeyboardButton(text="🐌 Прокрастинация"), KeyboardButton(text="🚗 Логистика")],
-    ],
-    resize_keyboard=True
-)
 
 CATEGORIES = ["😴 Сон", "🛁 Уход за собой", "💼 Работа", "🏋️‍ Спорт и Здоровье", "👨‍👩‍👧‍👦 Семья и друзья",
               "🚗 Логистика", "🏡 Домашние дела", "🎮 Развлечения", "📚 Личное развитие", "🐌 Прокрастинация"]
 
 # Словарь для перевода дней недели
 DAYS_TRANSLATION = {
-        "Monday": "Понедельник",
-        "Tuesday": "Вторник",
-        "Wednesday": "Среда",
-        "Thursday": "Четверг",
-        "Friday": "Пятница",
-        "Saturday": "Суббота",
-        "Sunday": "Воскресенье",
-    }
+    "Monday": "Понедельник",
+    "Tuesday": "Вторник",
+    "Wednesday": "Среда",
+    "Thursday": "Четверг",
+    "Friday": "Пятница",
+    "Saturday": "Суббота",
+    "Sunday": "Воскресенье",
+}
+
+CATEGORY_MAPPING = {
+    "selfcare": "🛁 Уход за собой",
+    "work": "💼 Работа",
+    "sport": "🏋️‍ Спорт и Здоровье",
+    "family": "👨‍👩‍👧‍👦 Семья и друзья",
+    "sleep": "😴 Сон",
+    "home": "🏡 Домашние дела",
+    "learning": "📚 Личное развитие",
+    "fun": "🎮 Развлечения",
+    "lazy": "🐌 Прокрастинация",
+    "logistics": "🚗 Логистика"
+}
+
+
+# Переводит datetime Python в строку UTC ISO 8601
+def to_utc_iso(dt):
+    dt_utc = dt.astimezone(pytz.utc)  # Приводим к UTC
+    return dt_utc.isoformat()  # Преобразуем в ISO формат
+
+
+# Переводит строку UTC ISO 8601 в datetime UTC
+def from_utc_iso(utc_str):
+    dt_utc = datetime.fromisoformat(utc_str).replace(tzinfo=pytz.utc)  # Приводим к UTC
+    return dt_utc
+
+
+# Переводит datetime UTC в datetime с локальным часовым поясом
+def from_utc_to_tz(dt):
+    local_tz = os.getenv("TZ", "Asia/Dubai")  # Получаем локальный часовой пояс из переменной среды
+    return dt.astimezone(pytz.timezone(local_tz))  # Переводим в локальный часовой пояс
+
+
+# Переводит местное время в UTC
+def local_time_to_utc(dt):
+    local_tz = os.getenv("TZ", "Asia/Dubai")  # Получаем локальный часовой пояс
+    local_zone = pytz.timezone(local_tz)
+    dt = local_zone.localize(dt)
+    # Переводим в UTC
+    utc_dt = dt.astimezone(pytz.utc)
+    return utc_dt
+
+
+# Функция для удаления эмодзи из строки.
+def remove_emojis(text):
+    return re.sub(r'[^\w\s,]', '', text)
+
+
+# Функция для форматирования процентов. Скрывает проценты < 1%
+def autopct_func(pct, allvalues):
+    if pct < 1:
+        return ''
+    else:
+        return f'{pct:.0f}%'  # Округляем до целого числа
+
+
+# Функция для создания главного меню
+def get_main_menu(has_active_tracking: bool):
+    keyboard = []
+    if has_active_tracking:
+        keyboard.append([
+            KeyboardButton(text="⏺ Начать трекинг"),KeyboardButton(text="⏹ Завершить трекинг")
+        ])
+    else:
+        keyboard.append([
+            KeyboardButton(text="⏺ Начать трекинг")
+        ])
+    keyboard.append([
+        KeyboardButton(text="➕ Добавить трекинг"), KeyboardButton(text="✏ Изменить трекинг")
+    ])
+    keyboard.append([KeyboardButton(text="📊 Статистика")])
+
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+# Проверяет наличие активного треккинга
+def check_active_tracking(user_id):
+    cursor.execute("SELECT COUNT(*) FROM time_tracking WHERE user_id = ?", (user_id,))
+    count = cursor.fetchone()[0]
+    return count > 0
+
+
+# Создает меню категорий
+def get_category_menu(categories):
+    keyboard = []
+    # Группируем по две кнопки в ряд
+    for i in range(0, len(categories), 2):
+        row = categories[i:i + 2]  # Берём 2 элемента
+        keyboard.append([KeyboardButton(text=cat) for cat in row])  # Создаём строку
+
+    # Добавляем кнопку "Назад" в отдельную строку
+    keyboard.append([KeyboardButton(text="⬅ Назад")])
+
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+# Создает меню статистики
+def get_stats_menu():
+    keyboard = [[KeyboardButton(text="📅 Статистика за день"), KeyboardButton(text="📊 Статистика за неделю")],
+                [KeyboardButton(text="⬅ Назад")]]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 # Обработчик команды /start
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
-    await message.answer("Выберите категорию:", reply_markup=keyboard)
+    user_id = message.from_user.id
+    has_active_tracking = check_active_tracking(user_id)
+    await message.answer("Выберите действие:", reply_markup=get_main_menu(has_active_tracking))
 
 
 def start_tracking(user_id, category):
-    now = datetime.now().isoformat()  # Записываем текущее время в ISO формате
+    now = to_utc_iso(datetime.now())  # Записываем текущее время в ISO формате
     cursor.execute("INSERT INTO time_tracking (user_id, category, start_time) VALUES (?, ?, ?)",
                    (user_id, category, now))
     conn.commit()
@@ -103,15 +195,17 @@ def stop_tracking(user_id):
     if row:
         category, start_time = row
         start = start_time
-        start_time = datetime.fromisoformat(start_time)
-        now = datetime.now().isoformat()
-        duration = datetime.now() - start_time
+        start_time = from_utc_iso(start_time)
+        now = datetime.now().astimezone(pytz.utc)
+        end = to_utc_iso(now)
+        duration = now - start_time
         minutes = round(duration.total_seconds() / 60)
 
         # **Сохраняем в таблицу статистики**
         date = datetime.now().strftime("%Y-%m-%d")  # Дата в формате YYYY-MM-DD
-        cursor.execute("INSERT INTO time_logs (user_id, category, date, start_time, end_time, duration) VALUES (?, ?, ?, ?, ?, ?)",
-                       (user_id, category, date, start, now, minutes))
+        cursor.execute(
+            "INSERT INTO time_logs (user_id, category, date, start_time, end_time, duration) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, category, date, start, end, minutes))
         conn.commit()
 
         # Удаляем запись из `time_tracking`, чтобы активность считалась завершённой
@@ -125,7 +219,11 @@ def stop_tracking(user_id):
 # статистика за день по категориям
 def get_daily_stats(user_id):
     date = datetime.now().strftime("%Y-%m-%d")
-
+    local_tz = pytz.timezone(os.getenv("TZ", "Asia/Dubai"))
+    midnight_local = datetime.now(local_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight_utc = midnight_local.astimezone(pytz.utc)
+    now_utc = datetime.now(pytz.utc)
+    total_for_now = int((now_utc - midnight_utc).total_seconds()//60)
     cursor.execute("""
         SELECT category, SUM(duration) FROM time_logs 
         WHERE user_id = ? AND date = ? 
@@ -133,27 +231,26 @@ def get_daily_stats(user_id):
     """, (user_id, date))
 
     rows = cursor.fetchall()
-
-    # Считаем время без трекинга
-    total_tracked = sum(duration for _, duration in rows)
-    now = datetime.now()
     cursor.execute("""
-        SELECT start_time FROM time_logs 
-        WHERE user_id = ? AND date = ? 
-        ORDER BY end_time LIMIT 1
+            SELECT category, start_time, end_time, duration FROM time_logs 
+            WHERE user_id = ? AND date = ? ORDER BY end_time LIMIT 1
         """, (user_id, date))
-    start_time = cursor.fetchone()[0]
-    start_time = datetime.fromisoformat(start_time) if start_time else None
-    h7m30 = datetime(now.year, now.month, now.day, 7, 30,0)
-    if start_time and start_time < h7m30:
-        total_for_now = now - start_time
-        total_for_now = round(total_for_now.total_seconds() / 60)
-    else:
-        total_for_now = now - h7m30
-        total_for_now = round(total_for_now.total_seconds() / 60)
 
-    rows = cursor.fetchall()
-    untracked_minutes = total_for_now - total_tracked
+    category_sleep, start_time_sleep, end_time_sleep, duration_sleep = cursor.fetchone()
+    sleep_before_midnight = 0
+
+    start_time_sleep = from_utc_iso(start_time_sleep)
+    end_time_sleep = from_utc_iso(end_time_sleep)
+
+    if category_sleep == "😴 Сон":
+        if start_time_sleep < midnight_utc < end_time_sleep:
+            sleep_before_midnight = (midnight_utc-start_time_sleep).total_seconds() / 60  # Время сна после 00:00
+            sleep_before_midnight = max(0, round(sleep_before_midnight))
+
+    total_tracked = sum(duration for _, duration in rows)
+
+    # Вычисляем "без трекинга" до текущего момента
+    untracked_minutes = total_for_now - total_tracked + sleep_before_midnight
 
     # Добавляем "Без трекинга"
     rows.append(("🕰 Без трекинга", untracked_minutes))
@@ -183,29 +280,56 @@ def get_weekly_stats(user_id):
     # Добавляем "Без трекинга" на каждый день
     for weekday in stats_by_day.keys():
         total_tracked = sum(stats_by_day[weekday].values())
-        untracked_minutes = 1440 - total_tracked
+        today = DAYS_TRANSLATION[datetime.now().strftime("%A")]
+
+        if weekday != today:
+            untracked_minutes = max(1440 - total_tracked, 0)
+        else:
+            now = from_utc_to_tz(datetime.now().astimezone(pytz.utc))
+            untracked_minutes = now.hour * 60 + now.minute
+            untracked_minutes = max(untracked_minutes-total_tracked, 0)
         stats_by_day[weekday]["🕰 Без трекинга"] = untracked_minutes
 
     return stats_by_day
 
 
-# Функция для удаления эмодзи из строки.
-def remove_emojis(text):
-    return re.sub(r'[^\w\s,]', '', text)
+# Обработчик нажатия на кнопку ⏺ Начать трекинг
+@dp.message(lambda message: message.text == "⏺ Начать трекинг")
+async def start_tracking_menu(message: types.Message):
+    await message.answer("Выберите категорию:", reply_markup=get_category_menu(CATEGORIES))
 
 
-# Функция для форматирования процентов. Скрывает проценты < 1%
-def autopct_func(pct, allvalues):
-    if pct < 1:
-        return ''
+# Обработчик нажатия на кнопку ⬅ Назад
+@dp.message(lambda message: message.text == "⬅ Назад")
+async def back_to_menu(message: types.Message):
+    user_id = message.from_user.id
+    has_active_tracking = check_active_tracking(user_id)
+    await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
+
+
+# Обработчик нажатия на кнопку ⏹ Завершить трекинг
+@dp.message(lambda message: message.text == "⏹ Завершить трекинг")
+async def stop_tracking_handler(message: types.Message):
+    user_id = message.from_user.id
+    category, minutes = stop_tracking(user_id)
+    if category:
+        await message.answer(f"⏳ Ты потратил {minutes} мин на {category}.", parse_mode="Markdown")
     else:
-        return f'{pct:.0f}%'  # Округляем до целого числа
+        await message.answer("Нет активного трекинга.")
+    has_active_tracking = check_active_tracking(user_id)
+    await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
 
 
-# Обработчик нажатия на кнопку
+# Обработчик нажатия на кнопку 📊 Статистика
+@dp.message(lambda message: message.text == "📊 Статистика")
+async def show_stats_menu(message: types.Message):
+    await message.answer("Выберите нужную статистику:", reply_markup=get_stats_menu())
+
+
+# Обработчик нажатия на кнопку категории
 @dp.message(lambda message: message.text in CATEGORIES)
 async def track_time(message: types.Message):
-    user_id = message.from_user.id # Получаем ID пользователя
+    user_id = message.from_user.id  # Получаем ID пользователя
     category = message.text
 
     # Проверяем, была ли активность
@@ -215,16 +339,112 @@ async def track_time(message: types.Message):
         await message.answer(f"⏳ Ты потратил {minutes} мин на {old_category}.")
 
     # Запускаем новую активность
-    if old_category != category:
-        start_tracking(user_id, category)
-        await message.answer(f"✅ Начат трекинг: {category}")
+    start_tracking(user_id, category)
+    await message.answer(f"✅ Начат трекинг: {category}")
+    has_active_tracking = check_active_tracking(user_id)
+    await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
+
+
+# Добавляет не отмеченный трек в прошлом
+@dp.message(lambda message: message.text == "➕ Добавить трекинг")
+async def add_past_tracking(message: types.Message):
+    user_id = message.from_user.id
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛁 Уход за собой", callback_data=f"track_selfcare_{user_id}"),
+         InlineKeyboardButton(text="💼 Работа", callback_data=f"track_work_{user_id}")],
+        [InlineKeyboardButton(text="🏋️‍ Спорт и Здоровье", callback_data=f"track_sport_{user_id}"),
+         InlineKeyboardButton(text="👨‍👩‍👧‍👦 Семья и друзья", callback_data=f"track_family_{user_id}")],
+        [InlineKeyboardButton(text="😴 Сон", callback_data=f"track_sleep_{user_id}"),
+         InlineKeyboardButton(text="🏡 Домашние дела", callback_data=f"track_home_{user_id}")],
+        [InlineKeyboardButton(text="📚 Личное развитие", callback_data=f"track_learning_{user_id}"),
+         InlineKeyboardButton(text="🎮 Развлечения", callback_data=f"track_fun_{user_id}")],
+        [InlineKeyboardButton(text="🐌 Прокрастинация", callback_data=f"track_lazy_{user_id}"),
+         InlineKeyboardButton(text="🚗 Логистика", callback_data=f"track_logistics_{user_id}")],
+    ])
+    await message.answer("Выбери категорию: ", reply_markup=keyboard)
+
+
+# Колбэк выбора категории для добавления старого трека
+@dp.callback_query(F.data.startswith("track_"))
+async def add_past_tracking_by_category(callback: CallbackQuery, state: FSMContext):
+    category = callback.data.split("_")[1]
+    try:
+        category = CATEGORY_MAPPING.get(category)
+        user_id = callback.data.split("_")[2]
+        await callback.message.answer("Введи время и дату начала в формате DD.MM HH:MM:")
+        await state.update_data(category=category, user_id=user_id)
+        await state.set_state("waiting_for_new_tracking_start_time")
+    except ValueError:
+        await callback.message.answer("Ошибка категории. Попробуй снова")
+
+
+# Обработка времени старта трекинга в прощшлом
+@dp.message(StateFilter("waiting_for_new_tracking_start_time"))
+async def process_new_tracking_start_time(message: types.Message, state: FSMContext):
+    try:
+        date, hours = message.text.split()
+        hour, minute = map(int, hours.split(":"))
+        day, month = map(int, date.split("."))
+        now_utc = datetime.now().astimezone(pytz.utc)
+        date = datetime(now_utc.year, month, day, hour, minute)
+        date_utc = local_time_to_utc(date)
+        if date_utc > now_utc:
+            await message.answer("Ошибка: Время не может быть позже настоящего момента! Попробуйте еще раз.")
+            return
+        else:
+            await message.answer("Введи время и дату окончания в формате DD.MM HH:MM:")
+            await state.update_data(start_time=date_utc)
+            await state.set_state("waiting_for_new_tracking_end_time")
+    except ValueError:
+        await message.answer("Неверный формат! Попробуй еще раз (пример: 7.02 14:30).")
+
+
+# Обработка времени окончания трекинга в прошлом
+@dp.message(StateFilter("waiting_for_new_tracking_end_time"))
+async def process_new_tracking_end_time(message: types.Message, state: FSMContext):
+    try:
+        date, hours = message.text.split()
+        hour, minute = map(int, hours.split(":"))
+        day, month = map(int, date.split("."))
+        data = await state.get_data()
+        category = data["category"]
+        user_id = data["user_id"]
+        start_time = data["start_time"]
+        now = datetime.now().astimezone(pytz.utc)
+        end_time = local_time_to_utc(datetime(now.year, month, day, hour, minute))
+        if end_time > now or start_time > end_time:
+            await message.answer(
+                "Ошибка: Время не может быть позже настоящего момента и раньше времени старта! Попробуйте еще раз.")
+            return
+        else:
+            start_time_str = from_utc_to_tz(start_time).strftime("%d.%m.%Y %H:%M")
+            end_time_str = from_utc_to_tz(end_time).strftime("%d.%m.%Y %H:%M")
+            start_time_iso = start_time.isoformat()
+            end_time_iso = end_time.isoformat()
+            date = end_time.strftime("%Y-%m-%d")
+            duration = round((end_time - start_time).total_seconds() / 60)
+            cursor.execute(
+                "INSERT INTO time_logs (user_id, category, date, start_time, end_time, duration) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, category, date, start_time_iso, end_time_iso, duration),
+            )
+            conn.commit()
+            await message.answer(
+                f"Новый треккинг категории *{category}* успешно добавлен! 🎉\n"
+                f"📌 Время начала: {start_time_str}\n"
+                f"📌 Время окончания: {end_time_str}",
+                parse_mode="Markdown"
+            )
+            await state.clear()
+            has_active_tracking = check_active_tracking(user_id)
+            await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
+    except ValueError:
+        await message.answer("Неверный формат! Попробуй еще раз (пример: 7.02 14:30).")
 
 
 # Меняет время старта / окончания последней деятельности
-@dp.message(Command("edit_last_tracking"))
+@dp.message(lambda message: message.text == "✏ Изменить трекинг")
 async def edit_last_tracking(message: types.Message):
     user_id = message.from_user.id
-
     # Получаем последний трекинг пользователя
     cursor.execute(
         "SELECT id, category, start_time, end_time, date FROM time_logs WHERE user_id = ? ORDER BY start_time DESC LIMIT 1",
@@ -241,8 +461,8 @@ async def edit_last_tracking(message: types.Message):
         [InlineKeyboardButton(text="Изменить начало", callback_data=f"edit_start_{tracking_id}_{date}_{end_time}")],
         [InlineKeyboardButton(text="Изменить окончание", callback_data=f"edit_end_{tracking_id}_{date}_{start_time}")]
     ])
-    start_time_text = datetime.fromisoformat(start_time).strftime("%d.%m.%Y %H:%M")
-    end_time_text = datetime.fromisoformat(end_time).strftime("%d.%m.%Y %H:%M")
+    start_time_text = from_utc_to_tz(from_utc_iso(start_time)).strftime("%d.%m.%Y %H:%M")
+    end_time_text = from_utc_to_tz(from_utc_iso(end_time)).strftime("%d.%m.%Y %H:%M")
     await message.answer(
         f"Твой последний трекинг:\n"
         f"📌 Категория: {category}\n"
@@ -278,26 +498,29 @@ async def edit_end_time(callback: CallbackQuery, state: FSMContext):
 @dp.message(StateFilter("waiting_for_new_start_time"))
 async def process_new_start_time(message: types.Message, state: FSMContext):
     try:
-        new_hour, new_minute = map(int,message.text.split(":"))
+        new_hour, new_minute = map(int, message.text.split(":"))
         data = await state.get_data()
         tracking_id = data["tracking_id"]
         date = data["date"]
-        end_time = datetime.fromisoformat(data["end_time"])
+        end_time = from_utc_iso(data["end_time"])
         new_start_time = datetime.strptime(date, "%Y-%m-%d").replace(hour=new_hour, minute=new_minute)
-
+        new_start_time = local_time_to_utc(new_start_time)
         if end_time < new_start_time:
             await message.answer("Ошибка: Время финиша не может быть раньше старта! Попробуйте еще раз.")
         else:
             new_time_iso = new_start_time.isoformat()
             duration = end_time - new_start_time
             minutes = round(duration.total_seconds() / 60)
-            cursor.execute("UPDATE time_logs SET start_time = ?, duration = ? WHERE id = ?", (new_time_iso, minutes, tracking_id))
+            cursor.execute("UPDATE time_logs SET start_time = ?, duration = ? WHERE id = ?",
+                           (new_time_iso, minutes, tracking_id))
             conn.commit()
 
-            new_time_str = new_start_time.strftime("%d.%m.%Y %H:%M")
+            new_time_str = from_utc_to_tz(new_start_time).strftime("%d.%m.%Y %H:%M")
             await message.answer(f"✅ Время начала изменено на {new_time_str}.")
             await state.clear()
-
+            user_id = message.from_user.id
+            has_active_tracking = check_active_tracking(user_id)
+            await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
     except ValueError:
         await message.answer("Неверный формат! Попробуй еще раз (пример: 14:30).")
 
@@ -309,28 +532,32 @@ async def process_new_end_time(message: types.Message, state: FSMContext):
         data = await state.get_data()
         tracking_id = data["tracking_id"]
         date = data["date"]
-        start_time = datetime.fromisoformat(data["start_time"])
+        start_time = from_utc_iso(data["start_time"])
         new_end_time = datetime.strptime(date, "%Y-%m-%d").replace(hour=new_hour, minute=new_minute)
-
+        new_end_time = local_time_to_utc(new_end_time)
         if new_end_time < start_time:
             await message.answer("Ошибка: Время финиша не может быть раньше старта! Попробуйте еще раз.")
         else:
             new_time_iso = new_end_time.isoformat()
             duration = new_end_time - start_time
             minutes = round(duration.total_seconds() / 60)
-            cursor.execute("UPDATE time_logs SET end_time = ?, duration = ? WHERE id = ?", (new_time_iso, minutes, tracking_id))
+            cursor.execute("UPDATE time_logs SET end_time = ?, duration = ? WHERE id = ?",
+                           (new_time_iso, minutes, tracking_id))
             conn.commit()
-            new_time_str = new_end_time.strftime("%d.%m.%Y %H:%M")
+            new_time_str = from_utc_to_tz(new_end_time).strftime("%d.%m.%Y %H:%M")
             await message.answer(f"✅ Время окончания изменено на {new_time_str}.")
             await state.clear()
+            user_id = message.from_user.id
+            has_active_tracking = check_active_tracking(user_id)
+            await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
 
     except ValueError:
         await message.answer("Неверный формат! Попробуй еще раз (пример: 15:45).")
 
 
-# Обработчик получения статистики
-@dp.message(Command("stats_day"))
-async def send_daily_stats(message: types.Message):
+# Обработчик нажатия на кнопку 📅 Статистика за день
+@dp.message(lambda message: message.text == "📅 Статистика за день")
+async def show_stats_day(message: types.Message):
     user_id = message.from_user.id
 
     # Получаем статистику
@@ -349,7 +576,8 @@ async def send_daily_stats(message: types.Message):
 
     # Создаем график
     fig, ax = plt.subplots(figsize=(8, 8))
-    wedges, texts, autotexts = ax.pie(durations, autopct=lambda pct: autopct_func(pct, durations), startangle=90, colors=plt.cm.Paired.colors)
+    wedges, texts, autotexts = ax.pie(durations, autopct=lambda pct: autopct_func(pct, durations), startangle=90,
+                                      colors=plt.cm.Paired.colors)
     # Добавляем легенду внизу графика
     ax.legend(wedges, categories, title="Категории", loc="lower center", fontsize=10, bbox_to_anchor=(0.5, -0.3),
               ncol=3)
@@ -382,10 +610,13 @@ async def send_daily_stats(message: types.Message):
     text = (f"📊 *Статистика за сегодня:*\n{daily_text}")
 
     await message.answer(text, parse_mode="Markdown")
+    has_active_tracking = check_active_tracking(user_id)
+    await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
 
 
-@dp.message(Command("stats_week"))
-async def send_weekly_stats(message: types.Message):
+# Обработчик нажатия на кнопку 📊 Статистика за неделю
+@dp.message(lambda message: message.text == "📊 Статистика за неделю")
+async def show_stats_week(message: types.Message):
     user_id = message.from_user.id
     # Получаем статистику
     weekly_stats = get_weekly_stats(user_id)
@@ -398,6 +629,8 @@ async def send_weekly_stats(message: types.Message):
         )
         text += day_text
     await message.answer(text, parse_mode="Markdown")
+    has_active_tracking = check_active_tracking(user_id)
+    await message.answer("Главное меню:", reply_markup=get_main_menu(has_active_tracking))
 
 
 async def main():
