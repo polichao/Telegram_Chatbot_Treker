@@ -15,7 +15,6 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import re
 import pytz
-from db import *
 import sqlite3
 import requests
 
